@@ -74,6 +74,18 @@ def make_fake_client(alerts):
         def repo_alerts(self, repo):
             return alerts
 
+        def org_dependabot_alerts(self, org):
+            return []
+
+        def org_code_scanning_alerts(self, org):
+            return []
+
+        def repo_dependabot_alerts(self, repo):
+            return []
+
+        def repo_code_scanning_alerts(self, repo):
+            return []
+
     return FakeClient
 
 
@@ -118,7 +130,7 @@ def test_audit_writes_reports_without_raw_secrets(monkeypatch, workdir, capsys):
     assert parsed["summary"]["total"] == 2
     assert parsed["summary"]["verified_closed"] == 1
     assert parsed["summary"]["false_closure_risk"] == 1
-    assert "Total secret alerts scanned: 2" in terminal
+    assert "Total alerts scanned: 2" in terminal
 
 
 def test_fail_on_gcs3(monkeypatch, workdir):

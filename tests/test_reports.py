@@ -69,7 +69,7 @@ def build_result(config=None) -> AuditResult:
 def test_summary_block_counts_and_highest_risk():
     result = build_result()
     summary = summary_block(result)
-    assert "Total secret alerts scanned: 4" in summary
+    assert "Total alerts scanned: 4" in summary
     assert "Verified closed: 1" in summary
     assert "False-closure risk: 1" in summary
     assert "Active risk: 1" in summary
@@ -137,7 +137,8 @@ def test_json_report_has_no_secret_key_anywhere():
 
 def test_json_is_valid_and_states_closure_rule():
     parsed = json.loads(render_json(build_result(), Config()))
-    assert "GCS-0 requires provider-side validity == 'inactive'" in parsed["closure_rule"]
+    assert "defensible evidence chain" in parsed["closure_rule"]
+    assert "provider " in parsed["closure_rule"] or "validity" in parsed["closure_rule"]
 
 
 def test_repo_name_redaction():
@@ -168,6 +169,6 @@ def test_empty_result_renders():
     result = AuditResult(findings=[], scope_description="repo 'a/b'",
                          generated_at="2026-06-11T12:00:00Z")
     md = render_markdown(result, Config())
-    assert "No secret-scanning alerts" in md
+    assert "No alerts were found" in md
     assert summary_block(result).count("0") >= 5
     assert result.highest_risk is None

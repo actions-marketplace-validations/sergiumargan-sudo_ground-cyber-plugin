@@ -86,6 +86,14 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     gh.add_argument("--config", default="", help="path to .groundcyber.yml")
     gh.add_argument(
+        "--alerts",
+        default="",
+        help=(
+            "comma-separated alert families: "
+            "secret-scanning,dependabot,code-scanning (default: config)"
+        ),
+    )
+    gh.add_argument(
         "--output",
         default="",
         help="comma-separated formats: markdown,json,html",
@@ -150,6 +158,25 @@ def _merge_cli_into_config(config: Config, args: argparse.Namespace) -> Config:
         config.outputs = outputs
     if args.out_dir:
         config.out_dir = args.out_dir
+    if getattr(args, "alerts", ""):
+        mapping = {
+            "secret-scanning": "secret_scanning",
+            "secret_scanning": "secret_scanning",
+            "dependabot": "dependabot",
+            "code-scanning": "code_scanning",
+            "code_scanning": "code_scanning",
+        }
+        families = []
+        for name in args.alerts.split(","):
+            name = name.strip()
+            if not name:
+                continue
+            if name not in mapping:
+                raise ConfigError(f"unknown alert family {name!r}")
+            if mapping[name] not in families:
+                families.append(mapping[name])
+        if families:
+            config.families = families
     if args.redact_repo_names:
         config.redact_repo_names = True
     return config
@@ -177,10 +204,21 @@ def cmd_audit_github(args: argparse.Namespace) -> int:
         _say(
             "Requests that would be issued (all GET):"
         )
-        if config.org:
-            _say(f"  GET /orgs/{config.org}/secret-scanning/alerts")
-        for repo in config.repos:
-            _say(f"  GET /repos/{repo}/secret-scanning/alerts")
+        suffixes = {
+            "secret_scanning": "secret-scanning/alerts",
+            "dependabot": "dependabot/alerts",
+            "code_scanning": "code-scanning/alerts",
+        }
+        for family in config.families:
+            suffix = suffixes[family]
+            if config.org:
+                _say(f"  GET /orgs/{config.org}/{suffix}")
+            for repo in config.repos:
+                _say(f"  GET /repos/{repo}/{suffix}")
+        _say(
+            "  (plus read-only manifest/analyses GETs for evidence "
+            "verification of fixed alerts)"
+        )
         return EXIT_OK
 
     token = _token()
@@ -282,20 +320,27 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             _say(f"[warn] config not loaded: {exc}")
 
     if org or repo:
-        reachable, detail = client.probe_secret_scanning(org=org, repo=repo)
         target = f"org '{org}'" if org else f"repo '{repo}'"
-        if reachable:
-            _say(f"[ok] secret-scanning alert API accessible for {target}")
-        else:
-            ok = False
-            _say(f"[fail] secret-scanning alert API not accessible for {target}: {detail}")
+        labels = {
+            "secret_scanning": "secret-scanning",
+            "dependabot": "Dependabot",
+            "code_scanning": "code-scanning",
+        }
+        for family, label in labels.items():
+            reachable, detail = client.probe_alert_family(family, org=org, repo=repo)
+            if reachable:
+                _say(f"[ok] {label} alert API accessible for {target}")
+            else:
+                ok = False
+                _say(f"[fail] {label} alert API not accessible for {target}: {detail}")
+        if not ok:
             _say(
                 "       Org-level access usually needs a PAT or GitHub App "
-                "token with secret-scanning read; the default Actions "
-                "GITHUB_TOKEN is repository-scoped."
+                "token with the relevant alert read permissions; the default "
+                "Actions GITHUB_TOKEN is repository-scoped."
             )
     else:
-        _say("[info] no org/repo provided; skipped secret-scanning access probe")
+        _say("[info] no org/repo provided; skipped alert API access probes")
 
     _say("[ok] doctor performed GET requests only and fetched no secret values")
     return EXIT_OK if ok else EXIT_API

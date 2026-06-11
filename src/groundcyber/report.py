@@ -15,7 +15,7 @@ from typing import Any
 
 from . import __version__
 from .config import Config
-from .models import GCS, AuditResult, Finding
+from .models import ALL_FAMILIES, FAMILY_TITLES, GCS, AuditResult, Finding
 from .redact import pseudonymize_repo, redact_text
 
 GCS_ORDER = [
@@ -27,24 +27,35 @@ GCS_ORDER = [
 ]
 
 METHODOLOGY = """\
-Ground Cyber asks one question per alert: is the underlying credential
-proven dead, or merely marked resolved?
+Ground Cyber asks one question per alert: is the underlying risk proven
+closed, or merely marked resolved? Every verdict is produced by a
+deterministic rule table (no AI) over an explicit evidence chain.
 
-1. Secret-scanning alerts are fetched with read-only GET requests.
-2. Any raw secret value in an API response is hashed (SHA-256) immediately
-   and the raw value is discarded. Hashes are used only to detect the same
-   credential appearing in multiple alerts.
-3. Each alert is scored with a deterministic rule table (no AI):
-   - GCS-0 (verified closed) requires provider-side validity == "inactive".
-     Nothing else produces GCS-0.
-   - Resolution labels (revoked, used_in_tests, false_positive, wont_fix,
-     pattern_deleted, pattern_edited, ...) are administrative statements
-     and never count as closure evidence by themselves.
-   - Unknown or missing validity is never safe.
-   - If evidence cannot be retrieved, the alert fails closed to a
-     provisional (non-safe) state.
-   - A credential active in any alert escalates every other alert that
-     shares the same secret hash (duplicate active exposure).
+GCS-0 (verified closed) requires a defensible evidence chain per family:
+
+- Secret scanning: provider-side validity == "inactive". Resolution
+  labels (revoked, used_in_tests, false_positive, wont_fix,
+  pattern_deleted, pattern_edited, ...) are administrative statements
+  and never count as closure evidence by themselves.
+- Dependabot: state "fixed" (dependency-graph evidence) AND independent
+  read-only inspection of the named manifest/lockfile confirming the
+  vulnerable range is gone. Platform "fixed" alone is moderate evidence
+  and caps at GCS-1. Dismissals and auto-dismissals are risk acceptance
+  (GCS-3).
+- Code scanning: state "fixed" (scanner re-scan evidence) AND scan
+  continuity — the same tool demonstrably kept analyzing the repository
+  after the fix. A finding that vanished while scanning stopped is
+  scanner drift (GCS-3), not closure. Dismissals are risk acceptance.
+
+Shared rules:
+- All data is fetched with read-only GET requests.
+- Any raw secret value in an API response is hashed (SHA-256) immediately
+  and the raw value is discarded. Hashes are used only to detect the same
+  credential appearing in multiple alerts.
+- Unknown, ambiguous, or unavailable evidence is never safe: such alerts
+  fail closed to a provisional or risk state.
+- A credential active in any alert escalates every other alert that
+  shares the same secret hash (duplicate active exposure).
 """
 
 SECURITY_MODEL = """\
@@ -70,10 +81,17 @@ LIMITATIONS = """\
   exposure window; this tool verifies closure, not absence of past abuse.
 - Git history is not rewritten by resolving an alert: an exposed secret
   remains in history until rotated and scrubbed.
-- Organization-level scans require a token with organization-wide secret
-  scanning read access; the default Actions GITHUB_TOKEN is repo-scoped.
-- Alerts GitHub never raised (undetected secret types, private patterns
-  not configured) are invisible to this audit.
+- Dependabot manifest verification supports common lockfile formats with
+  exact pinned versions; anything it cannot parse with certainty is
+  reported as unverifiable (GCS-1 at best), never as verified.
+- Code-scanning continuity is checked at tool level (did the tool keep
+  uploading analyses). Rule-level drift — a disabled rule or an excluded
+  path inside a still-running scanner — cannot be detected through the
+  API and remains a residual risk on GCS-0 code-scanning verdicts.
+- Organization-level scans require a token with organization-wide alert
+  read access; the default Actions GITHUB_TOKEN is repo-scoped.
+- Alerts GitHub never raised (undetected secret types, disabled scanners,
+  missing custom patterns) are invisible to this audit.
 """
 
 
@@ -86,7 +104,7 @@ def _display_repo(finding: Finding, config: Config) -> str:
 def _scope_text(result: AuditResult, config: Config) -> str:
     if config.redact_repo_names:
         return (
-            "GitHub Secret Scanning alerts — scope identifiers redacted "
+            "GitHub security alerts — scope identifiers redacted "
             "(redact_repo_names enabled)"
         )
     return _clean(result.scope_description)
@@ -97,10 +115,16 @@ def _clean(text: Any) -> str:
 
 
 def summary_block(result: AuditResult) -> str:
+    family_counts = ", ".join(
+        f"{FAMILY_TITLES[fam].lower()}: {result.count_family(fam)}"
+        for fam in ALL_FAMILIES
+        if result.count_family(fam)
+    )
     lines = [
         "Ground Cyber Closure Report",
         "",
-        f"Total secret alerts scanned: {result.total}",
+        f"Total alerts scanned: {result.total}"
+        + (f" ({family_counts})" if family_counts else ""),
         f"Verified closed: {result.count(GCS.VERIFIED_CLOSED)}",
         f"Low residual risk: {result.count(GCS.LOW_RESIDUAL_RISK)}",
         f"Provisional / unknown: {result.count(GCS.PROVISIONAL)}",
@@ -136,13 +160,24 @@ def build_json(result: AuditResult, config: Config) -> dict[str, Any]:
         findings.append(
             {
                 "alert_number": a.number,
+                "family": a.family,
                 "repo": _clean(_display_repo(f, config)),
-                "secret_type": _clean(a.secret_type),
-                "secret_type_display": _clean(a.secret_type_display),
+                "finding_type": _clean(a.display_type),
+                "secret_type": _clean(a.secret_type) or None,
+                "secret_type_display": _clean(a.secret_type_display) or None,
                 "secret_hash": a.secret_hash,
                 "alert_state": _clean(a.state),
                 "resolution": _clean(a.resolution) or None,
-                "validity": _clean(a.validity) or "unknown",
+                "validity": _clean(a.validity) or ("unknown" if a.family == "secret_scanning" else None),
+                "severity": a.severity,
+                "dismissed_reason": _clean(a.dismissed_reason) or None,
+                "closure_claim": _clean(f.closure_claim),
+                "evidence_chain": [_clean(e) for e in f.evidence_chain],
+                "evidence_strength": f.evidence_strength,
+                "evidence_source": _clean(f.evidence_source),
+                "proof_grade": f.proof_grade,
+                "why_not_gcs0": _clean(f.why_not_gcs0) or None,
+                "recommended_next_evidence": _clean(f.recommended_next_evidence),
                 "gcs": f.gcs.label,
                 "gcs_title": f.gcs.title,
                 "closure_confirmed": f.closure_confirmed,
@@ -172,8 +207,11 @@ def build_json(result: AuditResult, config: Config) -> dict[str, Any]:
             "active_risk": result.count(GCS.ACTIVE_RISK),
         },
         "closure_rule": (
-            "GCS-0 requires provider-side validity == 'inactive'. Resolution "
-            "labels are not closure evidence. Unknown validity is not safe."
+            "GCS-0 requires a defensible evidence chain per family: provider "
+            "validity 'inactive' (secrets); 'fixed' plus independent manifest "
+            "verification (dependabot); 'fixed' plus scan continuity (code "
+            "scanning). Labels and dismissals are never closure evidence. "
+            "Unknown evidence is not safe."
         ),
         "errors": [_clean(e) for e in result.errors],
         "findings": findings,
@@ -213,19 +251,21 @@ def render_markdown(result: AuditResult, config: Config) -> str:
 
     parts.append("## Findings\n")
     if not result.findings:
-        parts.append("No secret-scanning alerts were found in scope.\n")
+        parts.append("No alerts were found in scope.\n")
     else:
         parts.append(
-            "| Alert | Repo | Secret type | State | Resolution | Validity "
-            "| GCS | Closure confirmed |\n"
-            "|---|---|---|---|---|---|---|---|\n"
+            "| Alert | Family | Repo | Finding | State | Resolution/Reason "
+            "| Evidence | GCS | Closure confirmed |\n"
+            "|---|---|---|---|---|---|---|---|---|\n"
         )
         for f in _sorted_findings(result):
             a = f.alert
+            resolution = a.resolution or a.dismissed_reason
             parts.append(
-                f"| #{a.number} | {_clean(_display_repo(f, config))} "
-                f"| {_clean(a.secret_type_display)} | {_clean(a.state)} "
-                f"| {_clean(a.resolution) or '—'} | {_clean(a.validity) or 'unknown'} "
+                f"| #{a.number} | {FAMILY_TITLES[a.family]} "
+                f"| {_clean(_display_repo(f, config))} "
+                f"| {_clean(a.display_type)} | {_clean(a.state)} "
+                f"| {_clean(resolution) or '—'} | {f.evidence_strength} "
                 f"| {f.gcs.label} | {'yes' if f.closure_confirmed else 'no'} |\n"
             )
         parts.append("\n## Per-alert reasoning\n")
@@ -235,10 +275,19 @@ def render_markdown(result: AuditResult, config: Config) -> str:
                 f"### Alert #{a.number} — {_clean(_display_repo(f, config))} "
                 f"({f.gcs.label}: {f.gcs.title})\n"
             )
-            parts.append(f"- **Secret type:** {_clean(a.secret_type_display)}\n")
             parts.append(
-                f"- **State / resolution / validity:** {_clean(a.state)} / "
-                f"{_clean(a.resolution) or '—'} / {_clean(a.validity) or 'unknown'}\n"
+                f"- **Family / finding:** {FAMILY_TITLES[a.family]} / "
+                f"{_clean(a.display_type)}\n"
+            )
+            resolution = a.resolution or a.dismissed_reason
+            validity_part = (
+                f" / validity: {_clean(a.validity) or 'unknown'}"
+                if a.family == "secret_scanning"
+                else ""
+            )
+            parts.append(
+                f"- **State / resolution:** {_clean(a.state)} / "
+                f"{_clean(resolution) or '—'}{validity_part}\n"
             )
             if a.created_at:
                 parts.append(f"- **Created:** {a.created_at}\n")
@@ -249,6 +298,22 @@ def render_markdown(result: AuditResult, config: Config) -> str:
                 f"{'true' if f.closure_confirmed else 'false'}\n"
             )
             parts.append(f"- **Basis:** {_clean(f.basis)}\n")
+            parts.append(f"- **Closure claim:** {_clean(f.closure_claim)}\n")
+            if f.evidence_chain:
+                parts.append("- **Evidence chain:**\n")
+                for item in f.evidence_chain:
+                    parts.append(f"  - {_clean(item)}\n")
+            parts.append(
+                f"- **Evidence strength / proof grade:** {f.evidence_strength} "
+                f"/ {f.proof_grade}\n"
+            )
+            if f.why_not_gcs0:
+                parts.append(f"- **Why not GCS-0:** {_clean(f.why_not_gcs0)}\n")
+            if f.recommended_next_evidence:
+                parts.append(
+                    f"- **Next evidence needed:** "
+                    f"{_clean(f.recommended_next_evidence)}\n"
+                )
             if f.blockers:
                 parts.append("- **Closure blockers:**\n")
                 for b in f.blockers:
@@ -311,13 +376,17 @@ def render_html(result: AuditResult, config: Config) -> str:
         a = f.alert
         color = _GCS_COLORS[f.gcs]
         blockers = "".join(f"<li>{esc(b)}</li>" for b in f.blockers)
+        resolution = a.resolution or a.dismissed_reason
+        evidence = f.evidence_strength
+        if a.family == "secret_scanning":
+            evidence = f"validity: {esc(a.validity) or 'unknown'}"
         rows.append(
             f"<tr>"
-            f"<td>#{a.number}</td>"
+            f"<td>#{a.number}<br><small>{FAMILY_TITLES[a.family]}</small></td>"
             f"<td>{esc(_display_repo(f, config))}</td>"
-            f"<td>{esc(a.secret_type_display)}</td>"
-            f"<td>{esc(a.state)} / {esc(a.resolution) or '—'}</td>"
-            f"<td>{esc(a.validity) or 'unknown'}</td>"
+            f"<td>{esc(a.display_type)}</td>"
+            f"<td>{esc(a.state)} / {esc(resolution) or '—'}</td>"
+            f"<td>{evidence}</td>"
             f"<td><strong style='color:{color}'>{f.gcs.label}</strong> "
             f"{esc(f.gcs.title)}</td>"
             f"<td>{'yes' if f.closure_confirmed else 'no'}</td>"
@@ -347,8 +416,8 @@ th{{background:#f6f8fa}}
 Generated at: {esc(result.generated_at)} · groundcyber v{__version__}</p>
 <h2>Findings</h2>
 <table>
-<tr><th>Alert</th><th>Repo</th><th>Secret type</th><th>State / resolution</th>
-<th>Validity</th><th>GCS</th><th>Closure confirmed</th><th>Reasoning</th></tr>
+<tr><th>Alert</th><th>Repo</th><th>Finding</th><th>State / resolution</th>
+<th>Evidence</th><th>GCS</th><th>Closure confirmed</th><th>Reasoning</th></tr>
 {''.join(rows) if rows else '<tr><td colspan="8">No alerts in scope.</td></tr>'}
 </table>
 <h2>Methodology</h2><pre>{html_module.escape(METHODOLOGY)}</pre>

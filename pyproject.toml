@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "groundcyber"
-version = "0.3.0"
-description = "False-closure verification for GitHub Secret Scanning alerts. Closed is a status. Revoked is evidence."
+version = "0.4.0"
+description = "False-closure verification for GitHub security alerts (secret scanning, Dependabot, code scanning). Closed is a status. Revoked is evidence."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

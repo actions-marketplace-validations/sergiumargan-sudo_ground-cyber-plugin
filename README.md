@@ -1,26 +1,30 @@
 # Ground Cyber
 
-**False-closure verification for GitHub Secret Scanning alerts.**
+**False-closure verification for GitHub security alerts: secret scanning,
+Dependabot, and code scanning.**
 
 > Closed is a status. Revoked is evidence.
 
-Ground Cyber does not ask whether a secret alert was marked resolved. It asks
-whether the underlying credential is actually proven dead. It answers one
-question across your repos or organization:
+Ground Cyber does not ask whether an alert was marked resolved. It asks
+whether the underlying risk is actually proven closed — and it requires a
+different evidence chain for each alert family. It answers one question
+across your repos or organization:
 
-> **Which of my closed GitHub secret alerts are not verifiably closed?**
+> **Which of my closed GitHub security alerts are not verifiably closed?**
 
 Ground Cyber does not modify alerts. It verifies whether closure evidence
 exists.
 
 ## What Ground Cyber does
 
-- Fetches GitHub Secret Scanning alerts (read-only, GET requests only).
+- Fetches GitHub secret scanning, Dependabot, and code scanning alerts
+  (read-only, GET requests only).
 - Scores every alert with a deterministic rule table — no AI is involved in
   any closure decision.
-- Separates alerts that are **verifiably closed** (provider-side validity
-  check says the credential is inactive) from alerts that are merely
-  **marked** closed.
+- Builds an explicit **evidence chain** per alert and separates alerts that
+  are **verifiably closed** from alerts that are merely **marked** closed.
+- Distinguishes verified closure, platform-reported fixes, administrative
+  dismissal, risk acceptance, scanner drift, and evidence gaps.
 - Produces a local closure-risk report in Markdown, JSON, and HTML.
 - Runs locally or as a GitHub Action. Nothing is uploaded anywhere.
 
@@ -36,24 +40,40 @@ GitHub also runs **validity checks** for many secret types and records
 whether the credential is `active`, `inactive`, or `unknown`. That field is
 evidence. The label is not.
 
-Ground Cyber's closure rule, which configuration cannot weaken:
+The same failure pattern exists in every alert family: Dependabot alerts
+dismissed as "no bandwidth" while the vulnerable package sits in the
+lockfile; code scanning findings that "disappeared" because the scanner
+stopped running, not because anyone fixed the code.
 
-- **GCS-0 (verified closed) requires provider-side validity = `inactive`.**
-- A resolution label never produces GCS-0 by itself.
-- **Unknown validity is not safe.**
-- A human dismissal or override is risk acceptance, not verified closure.
-- If evidence is unavailable (API failure, missing data), the alert fails
-  **closed** to a non-safe state — never to "fine".
+Ground Cyber's closure rule, which configuration cannot weaken — GCS-0
+(verified closed) requires a defensible evidence chain per family:
+
+| Family | GCS-0 requires | Platform state alone gets |
+|---|---|---|
+| Secret scanning | Provider-side validity = `inactive` | resolved + label → GCS-3 |
+| Dependabot | State `fixed` **and** independent read-only manifest/lockfile inspection confirming the vulnerable range is gone | `fixed` alone → GCS-1 (moderate evidence) |
+| Code scanning | State `fixed` **and** scan continuity: the same tool kept uploading analyses after the fix | `fixed` alone → GCS-2; scanner went quiet → GCS-3 (drift) |
+
+- A resolution label or dismissal never produces GCS-0 in any family.
+- **Unknown validity is not safe.** Dismissal is risk acceptance.
+- If evidence is unavailable (API failure, unreadable manifest, missing
+  analyses), the alert fails **closed** to a non-safe state — never to
+  "fine".
+- Every finding records `closure_claim`, `evidence_chain`,
+  `evidence_strength`, `proof_grade`, `why_not_gcs0`, and
+  `recommended_next_evidence`, so the report can say precisely things like:
+  *"GitHub reports this alert as fixed, but Ground Cyber cannot verify
+  closure because the dependency file was unavailable."*
 
 ## GCS scoring model
 
 | State | Name | Meaning | How it is produced |
 |---|---|---|---|
-| GCS-0 | Verified closed | Credential proven dead | Resolved alert **and** provider validity `inactive`. The only path. |
-| GCS-1 | Low residual risk | Mostly closed, minor gap | Open alert whose credential is already `inactive`, or inactive evidence awaiting a delayed re-check |
-| GCS-2 | Provisional / unknown | Evidence incomplete or unavailable | Open alert with unknown validity; any alert whose evidence could not be fetched |
-| GCS-3 | False-closure risk | Closed on paper, not in fact | Alert resolved with an administrative label but no provider-side `inactive` evidence |
-| GCS-4 | Active risk | Exploitable now | Provider validity `active` (even if the alert is resolved); publicly leaked credential with unknown validity; the same credential active in another alert |
+| GCS-0 | Verified closed | Risk proven closed | Family-specific evidence chain (see closure rule table above). The only path. |
+| GCS-1 | Low residual risk | Mostly closed, minor gap | Platform-verified fix awaiting independent verification (Dependabot); inactive credential on a still-open alert; delayed re-check pending |
+| GCS-2 | Provisional / unknown | Evidence incomplete or unavailable | Unknown validity; unestablishable scan continuity; any alert whose evidence could not be fetched; lower-severity open findings |
+| GCS-3 | False-closure risk | Closed on paper, not in fact | Administrative labels without evidence; dismissals and auto-dismissals (risk acceptance); scanner drift |
+| GCS-4 | Active risk | Exploitable now | Active credential (even if resolved); publicly leaked secret; open critical/high vulnerability; "fixed" contradicted by the manifest; duplicate active exposure |
 
 `closure_confirmed: true` appears only on GCS-0 findings.
 
@@ -79,8 +99,9 @@ groundcyber audit github --org example-org \
   --output markdown,json,html
 ```
 
-Useful flags: `--include-repo` / `--exclude-repo` (glob patterns,
-repeatable), `--config`, `--out-dir`, `--redact-repo-names`,
+Useful flags: `--alerts secret-scanning,dependabot,code-scanning` (pick
+alert families; default all), `--include-repo` / `--exclude-repo` (glob
+patterns, repeatable), `--config`, `--out-dir`, `--redact-repo-names`,
 `--fail-on-gcs3`, `--fail-on-gcs4`, `--dry-run` (prints the plan, makes zero
 API calls), `--verbose`.
 
@@ -126,9 +147,9 @@ values and never modifies alerts. See
 
 | Scenario | Token | Permissions |
 |---|---|---|
-| Single repository in Actions | default `GITHUB_TOKEN` | workflow `permissions: security-events: read` (repo must have secret scanning enabled) |
-| Single repository, local CLI | fine-grained PAT | repository permission **Secret scanning alerts: read** |
-| Organization-wide audit | fine-grained PAT or GitHub App token | organization-wide **Secret scanning alerts: read** |
+| Single repository in Actions | default `GITHUB_TOKEN` | workflow `permissions: security-events: read` (covers secret/code scanning; Dependabot alerts may additionally need a PAT) |
+| Single repository, local CLI | fine-grained PAT | repository permissions **Secret scanning alerts: read**, **Dependabot alerts: read**, **Code scanning alerts: read**, **Contents: read** (manifest verification) |
+| Organization-wide audit | fine-grained PAT or GitHub App token | the same alert read permissions, organization-wide |
 | Classic PAT alternative | classic PAT | `repo` + `security_events` scopes |
 
 **Limitation of the default `GITHUB_TOKEN`:** it is scoped to the repository
@@ -172,22 +193,24 @@ them is a configuration error.
 ```text
 Ground Cyber Closure Report
 
-Total secret alerts scanned: 8
-Verified closed: 1
+Total alerts scanned: 9 (secret scanning: 3, dependabot: 3, code scanning: 3)
+Verified closed: 3
 Low residual risk: 1
-Provisional / unknown: 1
-False-closure risk: 3
-Active risk: 2
+Provisional / unknown: 0
+False-closure risk: 4
+Active risk: 1
 
 Highest-risk finding:
 Alert #233 (GCS-4 Active risk): Provider validity is 'active': the
 credential is usable right now and the alert is open.
 ```
 
-Each finding records the alert number, repo (redacted if configured),
-secret type, alert state, resolution label, validity state, GCS score,
-`closure_confirmed`, the basis for the verdict, closure blockers, a
-recommended next action, and timestamps. Full sample reports:
+Each finding records the alert number, family, repo (redacted if
+configured), finding type, alert state, resolution/dismissal reason,
+validity (secrets), severity, GCS score, `closure_confirmed`, the full
+evidence chain with strength and proof grade, why GCS-0 was not granted,
+closure blockers, the next evidence needed, a recommended action, and
+timestamps. Full sample reports:
 [Markdown](docs/sample-report/groundcyber-report.md) ·
 [JSON](docs/sample-report/groundcyber-report.json) ·
 [HTML](docs/sample-report/groundcyber-report.html)
@@ -205,6 +228,13 @@ privacy, and report outputs. CLI flags override the file.
   participating providers. Secret types without validity checks can never
   reach GCS-0 through this tool — they surface as provisional or
   false-closure risk. That is deliberate: unknown validity is not safe.
+- Dependabot manifest verification supports common lockfiles with exact
+  pinned versions (package-lock.json, yarn.lock, requirements.txt,
+  Pipfile.lock, Gemfile.lock, Cargo.lock, composer.lock). Anything it
+  cannot parse with certainty stays unverified — GCS-1 at best.
+- Code-scanning continuity is verified at tool level. Rule-level drift (a
+  disabled rule or excluded path inside a still-running scanner) is not
+  detectable via the API and remains a documented residual risk.
 - Validity reflects GitHub's most recent check and may lag a very recent
   revocation or reactivation.
 - GCS-0 means the credential is dead **now**; it says nothing about whether

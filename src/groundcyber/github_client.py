@@ -18,8 +18,10 @@ import urllib.parse
 import urllib.request
 from typing import Any, Iterator, Optional
 
+import base64
+
 from . import __version__
-from .models import Alert
+from .models import FAMILY_CODE_SCANNING, FAMILY_DEPENDABOT, Alert
 from .redact import hash_secret, redact_text
 
 API_ROOT = "https://api.github.com"
@@ -34,6 +36,71 @@ class GitHubError(RuntimeError):
 
 class ReadOnlyViolation(RuntimeError):
     """Raised if anything attempts a non-GET request. This must never fire."""
+
+
+def _normalize_severity(value: Any) -> Optional[str]:
+    if not isinstance(value, str):
+        return None
+    value = value.lower()
+    return value if value in ("critical", "high", "medium", "low") else value or None
+
+
+def dependabot_alert_from_payload(raw: dict[str, Any], repo_full_name: str) -> Alert:
+    dependency = raw.get("dependency") or {}
+    package = dependency.get("package") or {}
+    advisory = raw.get("security_advisory") or {}
+    vulnerability = raw.get("security_vulnerability") or {}
+    first_patched = vulnerability.get("first_patched_version") or {}
+    dismisser = raw.get("dismissed_by")
+    return Alert(
+        number=raw.get("number", 0),
+        repo=repo_full_name,
+        family=FAMILY_DEPENDABOT,
+        state=raw.get("state") or "open",
+        severity=_normalize_severity(
+            vulnerability.get("severity") or advisory.get("severity")
+        ),
+        dismissed_reason=raw.get("dismissed_reason"),
+        dismissed_comment=raw.get("dismissed_comment"),
+        created_at=raw.get("created_at"),
+        updated_at=raw.get("updated_at"),
+        fixed_at=raw.get("fixed_at"),
+        resolved_at=raw.get("fixed_at") or raw.get("dismissed_at"),
+        resolved_by=dismisser.get("login") if isinstance(dismisser, dict) else None,
+        html_url=raw.get("html_url"),
+        package_name=package.get("name"),
+        package_ecosystem=package.get("ecosystem"),
+        manifest_path=dependency.get("manifest_path"),
+        vulnerable_range=vulnerability.get("vulnerable_version_range"),
+        first_patched_version=first_patched.get("identifier"),
+        advisory_id=advisory.get("ghsa_id") or advisory.get("cve_id"),
+    )
+
+
+def code_scanning_alert_from_payload(raw: dict[str, Any], repo_full_name: str) -> Alert:
+    rule = raw.get("rule") or {}
+    tool = raw.get("tool") or {}
+    dismisser = raw.get("dismissed_by")
+    return Alert(
+        number=raw.get("number", 0),
+        repo=repo_full_name,
+        family=FAMILY_CODE_SCANNING,
+        state=raw.get("state") or "open",
+        severity=_normalize_severity(
+            rule.get("security_severity_level") or rule.get("severity")
+        ),
+        dismissed_reason=raw.get("dismissed_reason"),
+        dismissed_comment=raw.get("dismissed_comment"),
+        created_at=raw.get("created_at"),
+        updated_at=raw.get("updated_at"),
+        fixed_at=raw.get("fixed_at"),
+        resolved_at=raw.get("fixed_at") or raw.get("dismissed_at"),
+        resolved_by=dismisser.get("login") if isinstance(dismisser, dict) else None,
+        html_url=raw.get("html_url"),
+        rule_id=rule.get("id") or rule.get("name"),
+        rule_description=rule.get("description"),
+        tool_name=tool.get("name"),
+    )
 
 
 def sanitize_alert_payload(raw: dict[str, Any]) -> dict[str, Any]:
@@ -193,19 +260,109 @@ class GitHubClient:
             alerts.append(alert_from_payload(item, repo))
         return alerts
 
-    def probe_secret_scanning(self, org: str = "", repo: str = "") -> tuple[bool, str]:
-        """Check secret-scanning API access without retrieving secret values."""
+    def repo_dependabot_alerts(self, repo_full_name: str) -> list[Alert]:
+        owner_repo = repo_full_name.strip("/")
+        path = f"/repos/{owner_repo}/dependabot/alerts"
+        return [
+            dependabot_alert_from_payload(item, owner_repo)
+            for item in self._paginate(path)
+            if isinstance(item, dict)
+        ]
+
+    def org_dependabot_alerts(self, org: str) -> list[Alert]:
+        alerts = []
+        for item in self._paginate(f"/orgs/{org}/dependabot/alerts"):
+            if not isinstance(item, dict):
+                continue
+            repo = (item.get("repository") or {}).get("full_name") or "unknown/unknown"
+            alerts.append(dependabot_alert_from_payload(item, repo))
+        return alerts
+
+    def repo_code_scanning_alerts(self, repo_full_name: str) -> list[Alert]:
+        owner_repo = repo_full_name.strip("/")
+        path = f"/repos/{owner_repo}/code-scanning/alerts"
+        return [
+            code_scanning_alert_from_payload(item, owner_repo)
+            for item in self._paginate(path)
+            if isinstance(item, dict)
+        ]
+
+    def org_code_scanning_alerts(self, org: str) -> list[Alert]:
+        alerts = []
+        for item in self._paginate(f"/orgs/{org}/code-scanning/alerts"):
+            if not isinstance(item, dict):
+                continue
+            repo = (item.get("repository") or {}).get("full_name") or "unknown/unknown"
+            alerts.append(code_scanning_alert_from_payload(item, repo))
+        return alerts
+
+    def fetch_file_text(self, repo_full_name: str, path: str) -> Optional[str]:
+        """Read a repository file (read-only contents API). None if unavailable."""
+        owner_repo = repo_full_name.strip("/")
+        clean_path = path.lstrip("/")
+        try:
+            data, _ = self._get(f"/repos/{owner_repo}/contents/{clean_path}")
+        except GitHubError:
+            return None
+        if not isinstance(data, dict) or data.get("encoding") != "base64":
+            return None
+        try:
+            return base64.b64decode(data.get("content") or "").decode(
+                "utf-8", errors="replace"
+            )
+        except (ValueError, TypeError):
+            return None
+
+    def latest_analysis_time(
+        self, repo_full_name: str, tool_name: Optional[str]
+    ) -> Optional[str]:
+        """Timestamp of the most recent code-scanning analysis for a tool.
+
+        Returns None when the analyses API is unavailable — callers must
+        treat that as 'continuity unknown', never as evidence.
+        """
+        owner_repo = repo_full_name.strip("/")
+        params = {"per_page": "1"}
+        if tool_name:
+            params["tool_name"] = tool_name
+        try:
+            data, _ = self._get(
+                f"/repos/{owner_repo}/code-scanning/analyses", params
+            )
+        except GitHubError:
+            return None
+        if isinstance(data, list) and data and isinstance(data[0], dict):
+            return data[0].get("created_at")
+        return None
+
+    _PROBE_PATHS = {
+        "secret_scanning": "secret-scanning/alerts",
+        "dependabot": "dependabot/alerts",
+        "code_scanning": "code-scanning/alerts",
+    }
+
+    def probe_alert_family(
+        self, family: str, org: str = "", repo: str = ""
+    ) -> tuple[bool, str]:
+        """Check alert API access for a family without retrieving secrets."""
+        suffix = self._PROBE_PATHS.get(family)
+        if suffix is None:
+            return False, f"unknown alert family {family!r}"
         if org:
-            path = f"/orgs/{org}/secret-scanning/alerts"
+            path = f"/orgs/{org}/{suffix}"
         elif repo:
-            path = f"/repos/{repo}/secret-scanning/alerts"
+            path = f"/repos/{repo}/{suffix}"
         else:
             return False, "no org or repo provided to probe"
         try:
             self._get(path, {"per_page": "1"})
-            return True, "secret-scanning alert API reachable"
+            return True, f"{suffix} API reachable"
         except GitHubError as exc:
             return False, str(exc)
+
+    def probe_secret_scanning(self, org: str = "", repo: str = "") -> tuple[bool, str]:
+        """Check secret-scanning API access without retrieving secret values."""
+        return self.probe_alert_family("secret_scanning", org=org, repo=repo)
 
 
 def _next_link(link_header: str) -> Optional[str]:

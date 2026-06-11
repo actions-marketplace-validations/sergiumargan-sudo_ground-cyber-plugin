@@ -109,13 +109,19 @@ class FailingClient:
     def repo_alerts(self, repo):
         raise GitHubError("HTTP 500: upstream error", 500)
 
+    org_dependabot_alerts = org_alerts
+    org_code_scanning_alerts = org_alerts
+    repo_dependabot_alerts = repo_alerts
+    repo_code_scanning_alerts = repo_alerts
+
 
 def test_audit_with_api_failures_fails_closed():
     """API failures must surface as errors, never as a clean/safe report."""
     config = Config(org="acme", repos=["acme/api"])
     result = run_audit(FailingClient(), config)
     assert result.findings == []
-    assert len(result.errors) == 2
+    # one org error and one repo error per enabled alert family
+    assert len(result.errors) == 2 * len(config.families)
     assert any("unverified" in e or "incomplete" in e for e in result.errors)
     # Nothing in a failed audit may claim verified closure.
     assert all(not f.closure_confirmed for f in result.findings)
@@ -131,6 +137,18 @@ class FakeClient:
 
     def repo_alerts(self, repo):
         return self._repo
+
+    def org_dependabot_alerts(self, org):
+        return []
+
+    def org_code_scanning_alerts(self, org):
+        return []
+
+    def repo_dependabot_alerts(self, repo):
+        return []
+
+    def repo_code_scanning_alerts(self, repo):
+        return []
 
 
 def test_audit_applies_include_exclude_filters():

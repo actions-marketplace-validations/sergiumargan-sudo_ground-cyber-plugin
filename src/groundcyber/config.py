@@ -17,6 +17,13 @@ from typing import Any, Optional
 
 import yaml
 
+from .models import (
+    ALL_FAMILIES,
+    FAMILY_CODE_SCANNING,
+    FAMILY_DEPENDABOT,
+    FAMILY_SECRET_SCANNING,
+)
+
 DEFAULT_CONFIG_FILENAME = ".groundcyber.yml"
 
 # Resolution labels that are administrative statements, not closure evidence.
@@ -42,6 +49,8 @@ scope:
 github:
   read_only: true                # must stay true; the tool only issues GET requests
   secret_scanning_alerts: true
+  dependabot_alerts: true
+  code_scanning_alerts: true
 
 closure:
   # GCS-0 requires provider-side validity == "inactive". This rule cannot be
@@ -104,6 +113,8 @@ class Config:
     )
 
     redact_repo_names: bool = False
+
+    families: list[str] = field(default_factory=lambda: list(ALL_FAMILIES))
 
     outputs: list[str] = field(default_factory=lambda: ["markdown", "json"])
     out_dir: str = "./groundcyber-report"
@@ -204,6 +215,15 @@ def parse_config(data: dict[str, Any]) -> Config:
             if label not in non_closing:
                 non_closing.append(label)
 
+    families = []
+    if github.get("secret_scanning_alerts", True):
+        families.append(FAMILY_SECRET_SCANNING)
+    if github.get("dependabot_alerts", True):
+        families.append(FAMILY_DEPENDABOT)
+    if github.get("code_scanning_alerts", True):
+        families.append(FAMILY_CODE_SCANNING)
+    _require(bool(families), "at least one alert family must be enabled")
+
     return Config(
         org=scope.get("org") or "",
         repos=list(scope.get("repos") or []),
@@ -214,6 +234,7 @@ def parse_config(data: dict[str, Any]) -> Config:
         require_delayed_recheck=bool(closure.get("require_delayed_recheck", False)),
         non_closing_labels=non_closing,
         redact_repo_names=bool(privacy.get("redact_repo_names", False)),
+        families=families,
         outputs=list(outputs),
         out_dir=report.get("out_dir") or "./groundcyber-report",
         include_methodology=bool(report.get("include_methodology", True)),

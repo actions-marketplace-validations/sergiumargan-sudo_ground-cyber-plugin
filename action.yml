@@ -29,6 +29,10 @@ inputs:
     description: "Path to a .groundcyber.yml in the checked-out repository"
     required: false
     default: ""
+  alerts:
+    description: "Comma-separated alert families: secret-scanning,dependabot,code-scanning (default: all)"
+    required: false
+    default: ""
   output:
     description: "Comma-separated report formats: markdown,json,html"
     required: false
@@ -74,6 +78,7 @@ runs:
         GC_INCLUDE: ${{ inputs.include-repo }}
         GC_EXCLUDE: ${{ inputs.exclude-repo }}
         GC_CONFIG: ${{ inputs.config }}
+        GC_ALERTS: ${{ inputs.alerts }}
         GC_OUTPUT: ${{ inputs.output }}
         GC_OUT_DIR: ${{ inputs.out-dir }}
         GC_REDACT: ${{ inputs.redact-repo-names }}
@@ -93,6 +98,9 @@ runs:
         fi
         if [ -n "$GC_CONFIG" ]; then
           args+=(--config "$GC_CONFIG")
+        fi
+        if [ -n "$GC_ALERTS" ]; then
+          args+=(--alerts "$GC_ALERTS")
         fi
         IFS=',' read -ra patterns <<< "$GC_INCLUDE"
         for p in "${patterns[@]}"; do
