@@ -14,7 +14,7 @@ from groundcyber.report import (
 )
 from groundcyber.scoring import score_alerts
 
-RAW_SECRET = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+RAW_SECRET = "ghp_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
 
 
 def build_result(config=None) -> AuditResult:

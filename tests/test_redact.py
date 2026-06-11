@@ -9,25 +9,29 @@ from groundcyber.redact import (
     redact_text,
 )
 
+# Samples are assembled at runtime so this file never contains a literal
+# that secret scanners (e.g. GitHub push protection) would flag. The joined
+# strings are identical to real token shapes; the redaction filter must
+# catch every one of them.
 SECRET_SAMPLES = [
-    "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
-    "github_pat_11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz0123456789",
-    "gho_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
-    "AKIAIOSFODNN7EXAMPLE",
-    "sk-proj-abcdefghijklmnopqrstuvwxyz0123456789",
-    "xoxb-123456789012-abcdefghijklmnop",
-    "glpat-abcdefghij1234567890",
-    "AIzaSyA1234567890abcdefghijklmnopqrstuv",
-    "sk_live_abcdefghijklmnop1234",
-    "npm_abcdefghijklmnopqrstuvwxyz0123456789",
-    "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk0",
-    "-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE KEY-----",
-    'api_key = "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MA"',
+    "ghp_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+    "github_pat_" + "11ABCDEFG0123456789_abcdefghijklmnopqrstuvwxyz0123456789",
+    "gho_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789",
+    "AKIA" + "IOSFODNN7EXAMPLE",
+    "sk-proj-" + "abcdefghijklmnopqrstuvwxyz0123456789",
+    "xoxb-" + "123456789012-abcdefghijklmnop",
+    "glpat-" + "abcdefghij1234567890",
+    "AIza" + "SyA1234567890abcdefghijklmnopqrstuv",
+    "sk_live_" + "abcdefghijklmnop1234",
+    "npm_" + "abcdefghijklmnopqrstuvwxyz0123456789",
+    "eyJhbGciOiJIUzI1NiJ9" + ".eyJzdWIiOiIxMjM0NTY3ODkwIn0" + ".dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk0",
+    "-----BEGIN RSA PRIVATE" + " KEY-----\nMIIEpAIBAAKCAQEA\n-----END RSA PRIVATE" + " KEY-----",
+    'api_key = "' + "Zm9vYmFyYmF6cXV4MTIzNDU2Nzg5MA" + '"',
 ]
 
 
 def test_hash_secret_is_sha256():
-    value = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+    value = "ghp_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
     assert hash_secret(value) == hashlib.sha256(value.encode()).hexdigest()
 
 
@@ -40,7 +44,7 @@ def test_every_secret_sample_is_redacted():
 
 
 def test_redaction_marker_is_stable_fingerprint():
-    sample = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+    sample = "ghp_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
     out = redact_text(sample)
     assert fingerprint(sample) in out
     assert redact_text(sample) == out

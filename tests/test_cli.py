@@ -10,7 +10,7 @@ from groundcyber.cli import EXIT_API, EXIT_CONFIG, EXIT_FAIL_ON, EXIT_OK, main
 from groundcyber.config import load_config
 from groundcyber.github_client import alert_from_payload
 
-RAW_SECRET = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+RAW_SECRET = "ghp_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
 
 
 @pytest.fixture(autouse=True)

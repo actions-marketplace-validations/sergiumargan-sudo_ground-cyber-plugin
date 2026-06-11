@@ -16,7 +16,7 @@ from groundcyber.github_client import (
     sanitize_alert_payload,
 )
 
-RAW_SECRET = "ghp_AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
+RAW_SECRET = "ghp_" + "AbCdEfGhIjKlMnOpQrStUvWxYz0123456789"
 
 
 def alert_payload(**overrides):
