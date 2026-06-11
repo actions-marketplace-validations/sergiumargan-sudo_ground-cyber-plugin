@@ -1,8 +1,5 @@
 name: "Ground Cyber Closure Audit"
-description: >-
-  False-closure verification for GitHub Secret Scanning alerts. Read-only:
-  verifies whether closure evidence exists; never modifies alerts and never
-  prints raw secret values.
+description: "Evidence-based closure verification for GitHub secret scanning, Dependabot, and code scanning alerts. Read-only."
 author: "Ground Cyber"
 branding:
   icon: "shield"
