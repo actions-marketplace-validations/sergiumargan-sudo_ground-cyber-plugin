@@ -65,6 +65,26 @@ Ground Cyber's closure rule, which configuration cannot weaken — GCS-0
   *"GitHub reports this alert as fixed, but Ground Cyber cannot verify
   closure because the dependency file was unavailable."*
 
+## Relocation / migration detection
+
+Closing a risk in one place does not always kill it — sometimes it just
+moves. The same leaked credential appears in another repo; a dependency is
+patched in one lockfile but still vulnerable via another path; a code-scanning
+rule is dismissed in one location while the same rule fires elsewhere.
+
+Ground Cyber detects this **from observed alerts only**: it flags a relocation
+when a risk is closed at one location (the origin) while the *same causal
+class* — same secret SHA-256 hash, same advisory, or same rule — is still live
+at a different location in scope. A single alert never produces a relocation
+finding; both ends must be seen, never assumed. Where a live location was first
+detected after the origin was closed, the report records the real
+post-closure interval from GitHub's own timestamps.
+
+This is observed within audited scope only — it cannot see forks, logs, CI
+systems, or repositories outside the scan. Absence of a relocation finding is
+not proof the risk did not move; it is proof it did not move *where the audit
+could see*.
+
 ## GCS scoring model
 
 | State | Name | Meaning | How it is produced |

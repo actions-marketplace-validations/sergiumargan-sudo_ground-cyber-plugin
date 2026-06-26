@@ -215,6 +215,44 @@ def build_json(result: AuditResult, config: Config) -> dict[str, Any]:
         ),
         "errors": [_clean(e) for e in result.errors],
         "findings": findings,
+        "relocations": [
+            {
+                "family": r.family,
+                "causal_class": _clean(r.causal_class),
+                "channel": r.channel,
+                "confidence": r.confidence,
+                "origin": {
+                    "repo": _clean(
+                        pseudonymize_repo(r.origin_repo)
+                        if config.redact_repo_names
+                        else r.origin_repo
+                    ),
+                    "number": r.origin_number,
+                    "state": _clean(r.origin_state),
+                    "closed_at": r.origin_closed_at,
+                },
+                "destinations": [
+                    {
+                        "repo": _clean(
+                            pseudonymize_repo(d["repo"])
+                            if config.redact_repo_names
+                            else d["repo"]
+                        ),
+                        "number": d["number"],
+                        "state": _clean(d["state"]),
+                        "created_at": d.get("created_at"),
+                        "manifest_path": _clean(d.get("manifest_path")) or None,
+                    }
+                    for d in r.destinations
+                ],
+                "relocation_after_closure": r.relocation_after_closure,
+                "observed_relocation_seconds": r.observed_relocation_seconds,
+                "multi_repo_attested": r.multi_repo_attested,
+                "basis": _clean(r.basis),
+                "recommended_action": _clean(r.recommended_action),
+            }
+            for r in result.relocations
+        ],
     }
 
 
@@ -324,6 +362,61 @@ def render_markdown(result: AuditResult, config: Config) -> str:
             if a.html_url and not config.redact_repo_names:
                 parts.append(f"- **Alert:** {a.html_url}\n")
             parts.append("\n")
+
+    parts.append("## Relocation / migration risk\n")
+    if not result.relocations:
+        parts.append(
+            "No relocation observed: no risk in scope was found closed in one "
+            "place while the same causal class (same secret hash, advisory, or "
+            "rule) is live in another. Note this is observed within audited "
+            "scope only — it cannot see forks, logs, or repos outside scope.\n\n"
+        )
+    else:
+        parts.append(
+            f"{len(result.relocations)} risk(s) closed in one location are "
+            "still live in another — closure relocated rather than resolved:\n\n"
+        )
+        for r in result.relocations:
+            origin = (
+                pseudonymize_repo(r.origin_repo)
+                if config.redact_repo_names
+                else r.origin_repo
+            )
+            parts.append(
+                f"### {FAMILY_TITLES[r.family]} — {_clean(r.causal_class)} "
+                f"({r.confidence} confidence)\n"
+            )
+            parts.append(
+                f"- **Origin (closed):** {_clean(origin)}#{r.origin_number} "
+                f"({_clean(r.origin_state)})"
+                + (f", closed {r.origin_closed_at}" if r.origin_closed_at else "")
+                + "\n"
+            )
+            parts.append("- **Still live at:**\n")
+            for d in r.destinations:
+                drepo = (
+                    pseudonymize_repo(d["repo"])
+                    if config.redact_repo_names
+                    else d["repo"]
+                )
+                loc = f"{_clean(drepo)}#{d['number']} ({_clean(d['state'])})"
+                if d.get("manifest_path"):
+                    loc += f" in {_clean(d['manifest_path'])}"
+                parts.append(f"  - {loc}\n")
+            if r.relocation_after_closure and r.observed_relocation_seconds is not None:
+                days = r.observed_relocation_seconds / 86400
+                parts.append(
+                    f"- **Observed post-closure relocation:** a live location "
+                    f"was first detected {days:.1f} days after the origin was "
+                    "closed (real interval from GitHub timestamps).\n"
+                )
+            if r.multi_repo_attested:
+                parts.append(
+                    "- **Platform-attested:** GitHub flags this secret as "
+                    "spanning multiple repositories.\n"
+                )
+            parts.append(f"- **Basis:** {_clean(r.basis)}\n")
+            parts.append(f"- **Recommended action:** {_clean(r.recommended_action)}\n\n")
 
     parts.append("## Recommended remediation order\n")
     parts.append(
