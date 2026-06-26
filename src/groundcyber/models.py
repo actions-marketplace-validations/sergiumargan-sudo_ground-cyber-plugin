@@ -186,11 +186,39 @@ class Finding:
 
 
 @dataclass
+class RelocationFinding:
+    """Evidence that a risk marked closed in one place is alive elsewhere.
+
+    Produced ONLY from real, fetched alerts: a relocation is asserted only
+    when both ends are observed — a closed/origin alert AND at least one
+    live destination alert in the same causal class (same secret hash, same
+    advisory, same rule). A single observed alert can never produce a
+    relocation finding (the destination must be seen, not assumed).
+    """
+
+    family: str
+    causal_class: str  # redaction-safe key (hash prefix, advisory id, rule id)
+    channel: str  # short label, e.g. "same_secret_hash_open_elsewhere"
+    origin_repo: str
+    origin_number: int
+    origin_state: str
+    origin_closed_at: Optional[str]
+    destinations: list[dict] = field(default_factory=list)  # {repo, number, state, created_at, manifest_path}
+    relocation_after_closure: bool = False
+    observed_relocation_seconds: Optional[int] = None  # real delta when destination postdates closure
+    confidence: str = "moderate"  # "high" | "moderate"
+    multi_repo_attested: bool = False
+    basis: str = ""
+    recommended_action: str = ""
+
+
+@dataclass
 class AuditResult:
     findings: list[Finding]
     scope_description: str
     generated_at: str
     errors: list[str] = field(default_factory=list)
+    relocations: list[RelocationFinding] = field(default_factory=list)
 
     def count(self, gcs: GCS) -> int:
         return sum(1 for f in self.findings if f.gcs is gcs)

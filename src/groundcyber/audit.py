@@ -16,6 +16,7 @@ from .models import (
     Alert,
     AuditResult,
 )
+from .relocation import detect_relocations
 from .scoring import _parse_ts, score_alerts
 
 
@@ -168,9 +169,11 @@ def run_audit(
                 alert.scan_continuity_note = note
 
     findings = score_alerts(deduped, config, now=now)
+    relocations = detect_relocations(deduped)
     return AuditResult(
         findings=findings,
         scope_description=describe_scope(config),
         generated_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
         errors=errors,
+        relocations=relocations,
     )
